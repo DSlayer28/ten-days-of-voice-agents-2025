@@ -33,122 +33,128 @@ logger = logging.getLogger("agent")
 load_dotenv(".env.local")
 
 @dataclass
-class BaristaOrder:
-    drinkType: str
-    size: str
-    milk: str
-    extras: list[str]
-    name: str
+class WellnessCheckin:
+    mood: str
+    stress: str
+    sleepHours: float
+    activityMinutes: int
+    focusArea: str
+    reflection: str
+
 
 
 class Assistant(Agent):
     def __init__(self) -> None:
         super().__init__(
             instructions=(
-                """You are a friendly barista at “Chai Sutta Bar”. Greet the customer and help them place a drink order.
-                    Collect these fields using your tools: drinkType, size, milk, extras, name.
-                    Ask one short question at a time and guide them if unsure.
-                    Understand drinks like masala chai, cutting chai, ginger chai, filter coffee, cold coffee, cappuccino, iced latte.
-                    Order flow: first drink type, then size, milk, extras, and finally their name.
-                    Use your tools as soon as a detail is clear.
-                    Keep replies brief (1 to 2 sentences) and stay fully in character.
-                    When all fields are collected, confirm the final order naturally."""
+                "You are a calm, supportive health & wellness voice companion.\n"
+                "Your goal is to guide the user through a short check-in and save their responses.\n"
+                "You MUST use these tools to store information: set_mood, set_stress, set_sleep, "
+                "set_activity, set_focus_area, set_reflection.\n"
+                "Collect these fields: mood, stress, sleepHours, activityMinutes, focusArea, reflection.\n"
+                "Ask one short question at a time (1 to 2 sentences) and keep your tone practical and non-dramatic.\n"
+                "Do NOT diagnose or give medical treatment. For serious issues, tell the user to seek a doctor or local emergency help.\n"
+                "Flow: ask how they feel → stress → last night's sleep → today's activity → main focus area → brief reflection.\n"
+                "Use tools as soon as a detail is clear. When all fields are stored, summarize their day in 2 to 3 sentences and end the check-in.\n"
             )
         )
         # internal partial state
         self._order: dict[str, object] = {}
 
     async def _check_completion(self) -> None:
-        required = {"drinkType", "size", "milk", "extras", "name"}
-        if set(self._order.keys()) == required:
-            order = BaristaOrder(
-                drinkType=str(self._order["drinkType"]),
-                size=str(self._order["size"]),
-                milk=str(self._order["milk"]),
-                extras=list(self._order["extras"]),
-                name=str(self._order["name"]),
+        required = {"mood", "stress", "sleepHours", "activityMinutes", "focusArea", "reflection"}
+
+        if required.issubset(self._state.keys()):
+            checkin = WellnessCheckin(
+                mood=str(self._state["mood"]),
+                stress=str(self._state["stress"]),
+                sleepHours=float(self._state["sleepHours"]),
+                activityMinutes=int(self._state["activityMinutes"]),
+                focusArea=str(self._state["focusArea"]),
+                reflection=str(self._state["reflection"]),
             )
-            await self._on_order_complete(order)
+            await self._on_checkin_complete(checkin)
         else:
-            # ask the model to continue collecting
             await self.session.generate_reply(
-                instructions="Continue collecting the missing order details."
+                instructions="Continue the wellness check-in and ask about any missing details."
             )
 
-    async def _on_order_complete(self, order: BaristaOrder) -> None:
+    async def _on_checkin_complete(self, checkin: WellnessCheckin) -> None:
         # 1) Save JSON file
-        orders_dir = Path(__file__).parent.parent / "orders"
-        orders_dir.mkdir(exist_ok=True)
+        checkins_dir = Path(__file__).parent.parent / "checkins"
+        checkins_dir.mkdir(exist_ok=True)
 
         ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
-        file_path = orders_dir / f"order-{ts}.json"
+        file_path = checkins_dir / f"checkin-{ts}.json"
 
         data = {
-            "drinkType": order.drinkType,
-            "size": order.size,
-            "milk": order.milk,
-            "extras": order.extras,
-            "name": order.name,
+            "mood": checkin.mood,
+            "stress": checkin.stress,
+            "sleepHours": checkin.sleepHours,
+            "activityMinutes": checkin.activityMinutes,
+            "focusArea": checkin.focusArea,
+            "reflection": checkin.reflection,
         }
 
         with file_path.open("w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
-        logger.info("Saved order JSON to %s", file_path)
+        logger.info("Saved wellness check-in JSON to %s", file_path)
 
-        # 2) Confirm to user
-        base = f"Got it, {order.name}! A {order.size} {order.drinkType} with {order.milk} milk"
-        if order.extras:
-            extras_str = ", ".join(order.extras)
-            base += f" and extras: {extras_str}."
-        else:
-            base += "."
-
-        await self.session.generate_reply(
-            instructions=(
-                "Confirm the order in one short sentence using this summary: "
-                f"'{base}'"
-            )
+        # 2) Summarize back to the user
+        summary_prompt = (
+            "Summarize this wellness check-in in 2–3 short sentences. "
+            "Be encouraging, but do NOT give medical advice or diagnoses.\n\n"
+            f"Mood: {checkin.mood}\n"
+            f"Stress: {checkin.stress}\n"
+            f"Sleep hours: {checkin.sleepHours}\n"
+            f"Activity minutes: {checkin.activityMinutes}\n"
+            f"Focus area: {checkin.focusArea}\n"
+            f"Reflection: {checkin.reflection}\n"
         )
 
+        await self.session.generate_reply(instructions=summary_prompt)
+
     @function_tool()
-    async def set_drink_type(self, context: RunContext, drink_type: str):
-        """Set the drink type, e.g. latte, cappuccino, americano, mocha, cold brew."""
-        logger.info("Setting drink type to %s", drink_type)
-        self._order["drinkType"] = drink_type
+    async def set_mood(self, context: RunContext, mood: str):
+        """Set the user's current mood in a short word or phrase, e.g. 'tired', 'anxious', 'okay', 'calm'."""
+        logger.info("Setting mood to %s", mood)
+        self._state["mood"] = mood
         await self._check_completion()
 
     @function_tool()
-    async def set_size(self, context: RunContext, size: str):
-        """Set the drink size, e.g. small, medium, large."""
-        logger.info("Setting size to %s", size)
-        self._order["size"] = size
+    async def set_stress(self, context: RunContext, stress: str):
+        """Set the user's stress level, e.g. 'low', 'medium', 'high', or a short phrase."""
+        logger.info("Setting stress to %s", stress)
+        self._state["stress"] = stress
         await self._check_completion()
 
     @function_tool()
-    async def set_milk(self, context: RunContext, milk: str):
-        """Set the milk type, e.g. whole, skim, oat, almond, soy."""
-        logger.info("Setting milk to %s", milk)
-        self._order["milk"] = milk
+    async def set_sleep(self, context: RunContext, hours: float):
+        """Set how many hours the user slept last night. Use a number like 6.5."""
+        logger.info("Setting sleepHours to %s", hours)
+        self._state["sleepHours"] = hours
         await self._check_completion()
 
     @function_tool()
-    async def add_extra(self, context: RunContext, extra: str):
-        """Add an extra such as extra shot, whipped cream, syrup, etc. or would like your drink more strong."""
-        logger.info("Adding extra %s", extra)
-        extras = self._order.get("extras")
-        if extras is None:
-            extras = []
-        if extra not in extras:
-            extras.append(extra)
-        self._order["extras"] = extras
+    async def set_activity(self, context: RunContext, minutes: int):
+        """Set how many minutes of movement/exercise the user had today."""
+        logger.info("Setting activityMinutes to %s", minutes)
+        self._state["activityMinutes"] = minutes
         await self._check_completion()
 
     @function_tool()
-    async def set_name(self, context: RunContext, name: str):
-        """Set the customer's name for the order."""
-        logger.info("Setting name to %s", name)
-        self._order["name"] = name
+    async def set_focus_area(self, context: RunContext, focus: str):
+        """Set the user's main focus area, e.g. 'sleep', 'stress', 'fitness', 'diet', 'productivity'."""
+        logger.info("Setting focusArea to %s", focus)
+        self._state["focusArea"] = focus
+        await self._check_completion()
+
+    @function_tool()
+    async def set_reflection(self, context: RunContext, reflection: str):
+        """Set a short free-text reflection from the user about their day or how they feel."""
+        logger.info("Setting reflection")
+        self._state["reflection"] = reflection
         await self._check_completion()
 
     # To add tools, use the @function_tool decorator.
