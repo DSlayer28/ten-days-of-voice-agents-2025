@@ -4,15 +4,13 @@ from dataclasses import dataclass
 from pathlib import Path
 import json
 from datetime import datetime
-
-from livekit.agents import Agent, AgentTask, function_tool, RunContext
-from livekit.agents import get_job_context  # if you actually use this elsewhere
-
-
+from typing import Dict, Any
+from livekit.plugins import murf
 
 from dotenv import load_dotenv
 from livekit.agents import (
     Agent,
+    AgentTask,
     AgentSession,
     JobContext,
     JobProcess,
@@ -22,8 +20,8 @@ from livekit.agents import (
     cli,
     metrics,
     tokenize,
-    # function_tool,
-    # RunContext
+    function_tool,
+    RunContext
 )
 from livekit.plugins import murf, silero, google, deepgram, noise_cancellation
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
@@ -32,187 +30,48 @@ logger = logging.getLogger("agent")
 
 load_dotenv(".env.local")
 
-from dataclasses import dataclass
-from pathlib import Path
-from datetime import datetime
-import json
-from typing import Dict, Any
+
 
 # ...
 
 @dataclass
-class PatientCheckin:
-    name: str
-    age: int
-    mood: str
-    stress: str
-    sleepHours: float
-    activityMinutes: int
-    mainConcern: str
-    reflection: str
+class Concept:
+    id: str
+    title: str
+    summary: str
+    sample_question: str
+
+def load_concepts() -> Dict[str, Concept]:
+    content_path = Path(__file__).parent.parent / "shared data" / "day4_tutor_content.json"
+    with content_path.open("r", encoding="utf-8") as f:
+        items = json.load(f)
+    concepts = {item["id"]: Concept(**item) for item in items}
+    return concepts
+
+
+class TutorAgentBase(Agent):
+    def __init__(self, chat_ctx, concepts, concept_id, instructions, tts):
+        # pass chat_ctx and tts to Agent so session and voice are wired correctly
+        super().__init__(chat_ctx=chat_ctx, instructions=instructions, tts=tts)
+        # DO NOT assign self.chat_ctx directly — Agent provides a read-only property
+        self._concepts = concepts
+        self._current = concept_id
+        # keep tts reference if you want, but Agent already stores it
+        self._tts = tts   # optional private copy
 
 
 
-class WellnessCheckinTask(AgentTask[PatientCheckin]):
-    def __init__(self, **kwargs) -> None:
-        super().__init__(
-            instructions=(
-                "You are conducting a simple wellness check-in.\n"
-                "You MUST use tools to record: name, age, mood, stress, sleepHours, "
-                "activityMinutes, mainConcern, reflection.\n"
-                "Ask one short question at a time. Keep a supportive but non-clinical tone.\n"
-                "Do NOT give diagnoses or medical treatment advice. For serious issues, "
-                "tell the user to contact a doctor or local emergency services.\n"
-            ),
-            **kwargs,
-        )
-        self._state: Dict[str, Any] = {}
-
-    async def _check_completion(self) -> None:
-        required = {
-            "name",
-            "age",
-            "mood",
-            "stress",
-            "sleepHours",
-            "activityMinutes",
-            "mainConcern",
-            "reflection",
-        }
-
-        if required.issubset(self._state.keys()):
-            result = PatientCheckin(
-                name=str(self._state["name"]),
-                age=int(self._state["age"]),
-                mood=str(self._state["mood"]),
-                stress=str(self._state["stress"]),
-                sleepHours=float(self._state["sleepHours"]),
-                activityMinutes=int(self._state["activityMinutes"]),
-                mainConcern=str(self._state["mainConcern"]),
-                reflection=str(self._state["reflection"]),
-            )
-            # This completes the task and returns control to the agent
-            self.complete(result)
-        else:
-            await self.session.generate_reply(
-                instructions="Continue the check-in and ask about any missing information."
-            )
+    @property
+    def concept(self):
+        return self._concepts[self._current]
 
     @function_tool()
-    async def set_name(self, context: RunContext, name: str):
-        """Set the patient's name."""
-        self._state["name"] = name
-        await self._check_completion()
-
-    @function_tool()
-    async def set_age(self, context: RunContext, age: int):
-        """Set the patient's age in years."""
-        self._state["age"] = age
-        await self._check_completion()
-
-    @function_tool()
-    async def set_mood(self, context: RunContext, mood: str):
-        """Set the current mood in a short word/phrase (e.g. 'okay', 'stressed', 'calm')."""
-        self._state["mood"] = mood
-        await self._check_completion()
-
-    @function_tool()
-    async def set_stress(self, context: RunContext, stress: str):
-        """Set stress level: low, medium, high, or a short description."""
-        self._state["stress"] = stress
-        await self._check_completion()
-
-    @function_tool()
-    async def set_sleep_hours(self, context: RunContext, hours: float):
-        """Set how many hours the patient slept last night."""
-        self._state["sleepHours"] = hours
-        await self._check_completion()
-
-    @function_tool()
-    async def set_activity_minutes(self, context: RunContext, minutes: int):
-        """Set how many minutes of movement/exercise they had today."""
-        self._state["activityMinutes"] = minutes
-        await self._check_completion()
-
-    @function_tool()
-    async def set_main_concern(self, context: RunContext, concern: str):
-        """Set the patient's main wellness concern (e.g. sleep, focus, stress)."""
-        self._state["mainConcern"] = concern
-        await self._check_completion()
-
-    @function_tool()
-    async def set_reflection(self, context: RunContext, reflection: str):
-        """Set a short free-text reflection from the patient."""
-        self._state["reflection"] = reflection
-        await self._check_completion()
-
-
-class Assistant(Agent):
-    def __init__(self) -> None:
-        super().__init__(
-            instructions=(
-                "You are a calm, supportive wellness companion.\n"
-                "You will run a wellness check-in task to collect patient details.\n"
-                "Keep your tone practical and supportive, not overly emotional.\n"
-            )
-        )
-
-    async def on_enter(self) -> None:
-        # Greet and explain what will happen
-        await self.session.generate_reply(
-            instructions=(
-                "Greet the user briefly and explain that you'll ask a few questions "
-                "to understand how they are doing today. Then start the check-in."
-            )
-        )
-
-        # Run the task – this will block until all details are collected
-        checkin: PatientCheckin = await WellnessCheckinTask(chat_ctx=self.chat_ctx)
-
-        # Save to JSON
-        file_path = self._save_checkin_to_file(checkin)
-
-        # Speak a short summary back to the user
-        summary = (
-            f"Thanks, {checkin.name}. Today you're feeling {checkin.mood} with stress level {checkin.stress}. "
-            f"You slept about {checkin.sleepHours} hours and moved for roughly {checkin.activityMinutes} minutes. "
-            f"Your main concern right now is {checkin.mainConcern}."
-        )
-
-        await self.session.generate_reply(
-            instructions=(
-                "Summarize the check-in to the user using this summary text in 2–3 short sentences. "
-                "Do not give medical advice.\n"
-                f"{summary}\n"
-                f"Optionally, mention that their check-in has been saved."
-            )
-        )
-
-    def _save_checkin_to_file(self, checkin: PatientCheckin) -> Path:
-        checkins_dir = Path(__file__).parent.parent / "checkins"
-        checkins_dir.mkdir(exist_ok=True)
-
-        ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
-        file_path = checkins_dir / f"checkin-{ts}.json"
-
-        data = {
-            "name": checkin.name,
-            "age": checkin.age,
-            "mood": checkin.mood,
-            "stress": checkin.stress,
-            "sleepHours": checkin.sleepHours,
-            "activityMinutes": checkin.activityMinutes,
-            "mainConcern": checkin.mainConcern,
-            "reflection": checkin.reflection,
-        }
-
-        with file_path.open("w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-
-        logger.info("Saved wellness check-in JSON to %s", file_path)
-        return file_path
-
-
+    async def change_concept(self, context: RunContext, concept_id: str):
+        if concept_id not in self._concepts:
+            await self.session.generate_reply(instructions=f"Concept '{concept_id}' not available. Options: {', '.join(self._concepts.keys())}")
+            return
+        self._current = concept_id
+        await self.session.generate_reply(instructions=f"Switched to {self.concept.title}.")
     # To add tools, use the @function_tool decorator.
     # Here's an example that adds a simple weather tool.
     # You also have to add `from livekit.agents import function_tool, RunContext` to the top of this file
@@ -229,6 +88,75 @@ class Assistant(Agent):
     #     logger.info(f"Looking up weather for {location}")
     #
     #     return "sunny with a temperature of 70 degrees."
+
+class LearnAgent(TutorAgentBase):
+    def __init__(self, chat_ctx, concepts, concept_id):
+        tts = murf.TTS(voice="en-US-matthew", style="Conversation", tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2), text_pacing=True)
+        super().__init__(chat_ctx, concepts, concept_id,
+            instructions=(
+                "LEARN mode: Explain the current concept clearly using the summary. Give one short example. Ask if user wants quiz, teach-back, or another example."
+            ),
+            tts=tts)
+
+    async def on_enter(self):
+        c = self.concept
+        await self.session.generate_reply(instructions=f"Explain '{c.title}': {c.summary}\nThen offer an example and ask if they'd like quiz or teach-back.")
+
+class QuizAgent(TutorAgentBase):
+    def __init__(self, chat_ctx, concepts, concept_id):
+        tts = murf.TTS(voice="en-US-alicia", style="Conversation", tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2), text_pacing=True)
+        super().__init__(chat_ctx, concepts, concept_id,
+            instructions=("QUIZ mode: Ask the sample question and up to 2 short follow-ups based on the user's answer. Provide brief feedback."),
+            tts=tts)
+
+    async def on_enter(self):
+        c = self.concept
+        await self.session.generate_reply(instructions=f"Quiz: {c.sample_question}\nWait for answer then ask follow-up.")
+
+
+class TeachBackAgent(TutorAgentBase):
+    def __init__(self, chat_ctx, concepts, concept_id):
+        tts = murf.TTS(voice="en-US-ken", style="Conversation", tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2), text_pacing=True)
+        super().__init__(chat_ctx, concepts, concept_id,
+            instructions=("TEACH_BACK mode: Ask the user to teach the concept back. After they speak, give 2-sentence qualitative feedback: 1 thing correct, 1 suggestion."),
+            tts=tts)
+
+    async def on_enter(self):
+        c = self.concept
+        await self.session.generate_reply(instructions=f"Please explain the concept '{c.title}' to me in your own words.")
+
+    
+
+class RouterAgent(Agent):
+    def __init__(self, concepts):
+        super().__init__(instructions="Router: Greet user, explain modes (learn/quiz/teach_back), ask concept choice. Use tools to hand off.")
+        self._concepts = concepts
+
+    async def on_enter(self):
+        await self.session.generate_reply(instructions="Hi — choose a mode (learn/quiz/teach_back) and a topic (e.g. variables or loops).")
+
+    def _validate(self, cid: str):
+        if cid not in self._concepts:
+            raise ValueError(f"Unknown concept {cid}")
+
+    @function_tool()
+    async def go_to_learn(self, context: RunContext, concept_id: str):
+        self._validate(concept_id)
+        agent = LearnAgent(chat_ctx=self.chat_ctx, concepts=self._concepts, concept_id=concept_id)
+        return agent, f"Switching to Learn mode for {concept_id}"
+
+    @function_tool()
+    async def go_to_quiz(self, context: RunContext, concept_id: str):
+        self._validate(concept_id)
+        agent = QuizAgent(chat_ctx=self.chat_ctx, concepts=self._concepts, concept_id=concept_id)
+        return agent, f"Switching to Quiz mode for {concept_id}"
+
+    @function_tool()
+    async def go_to_teach_back(self, context: RunContext, concept_id: str):
+        self._validate(concept_id)
+        agent = TeachBackAgent(chat_ctx=self.chat_ctx, concepts=self._concepts, concept_id=concept_id)
+        return agent, f"Switching to Teach-Back mode for {concept_id}"
+
 
 
 def prewarm(proc: JobProcess):
@@ -303,14 +231,13 @@ async def entrypoint(ctx: JobContext):
     # await avatar.start(session, room=ctx.room)
 
     # Start the session, which initializes the voice pipeline and warms up the models
+    concepts = load_concepts()
     await session.start(
-        agent=Assistant(),
+        agent=RouterAgent(concepts=concepts),
         room=ctx.room,
-        room_input_options=RoomInputOptions(
-            # For telephony applications, use `BVCTelephony` for best results
-            noise_cancellation=noise_cancellation.BVC(),
-        ),
+        room_input_options=RoomInputOptions(noise_cancellation=noise_cancellation.BVC()),
     )
+
 
     # Join the room and connect to the user
     await ctx.connect()
@@ -318,3 +245,6 @@ async def entrypoint(ctx: JobContext):
 
 if __name__ == "__main__":
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, prewarm_fnc=prewarm))
+
+    print(Path(__file__).parent.parent.resolve())
+    print((Path(__file__).parent.parent / "shared data" / "day4_tutor_content.json").exists())
