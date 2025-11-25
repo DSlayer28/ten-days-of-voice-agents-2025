@@ -5,7 +5,7 @@ from pathlib import Path
 import json
 from datetime import datetime
 
-from livekit.agents import Agent, function_tool, RunContext
+from livekit.agents import Agent, AgentTask, function_tool, RunContext
 from livekit.agents import get_job_context  # if you actually use this elsewhere
 
 
@@ -32,55 +32,163 @@ logger = logging.getLogger("agent")
 
 load_dotenv(".env.local")
 
+from dataclasses import dataclass
+from pathlib import Path
+from datetime import datetime
+import json
+from typing import Dict, Any
+
+# ...
+
 @dataclass
-class WellnessCheckin:
+class PatientCheckin:
+    name: str
+    age: int
     mood: str
     stress: str
     sleepHours: float
     activityMinutes: int
-    focusArea: str
+    mainConcern: str
     reflection: str
 
+
+
+class WellnessCheckinTask(AgentTask[PatientCheckin]):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(
+            instructions=(
+                "You are conducting a simple wellness check-in.\n"
+                "You MUST use tools to record: name, age, mood, stress, sleepHours, "
+                "activityMinutes, mainConcern, reflection.\n"
+                "Ask one short question at a time. Keep a supportive but non-clinical tone.\n"
+                "Do NOT give diagnoses or medical treatment advice. For serious issues, "
+                "tell the user to contact a doctor or local emergency services.\n"
+            ),
+            **kwargs,
+        )
+        self._state: Dict[str, Any] = {}
+
+    async def _check_completion(self) -> None:
+        required = {
+            "name",
+            "age",
+            "mood",
+            "stress",
+            "sleepHours",
+            "activityMinutes",
+            "mainConcern",
+            "reflection",
+        }
+
+        if required.issubset(self._state.keys()):
+            result = PatientCheckin(
+                name=str(self._state["name"]),
+                age=int(self._state["age"]),
+                mood=str(self._state["mood"]),
+                stress=str(self._state["stress"]),
+                sleepHours=float(self._state["sleepHours"]),
+                activityMinutes=int(self._state["activityMinutes"]),
+                mainConcern=str(self._state["mainConcern"]),
+                reflection=str(self._state["reflection"]),
+            )
+            # This completes the task and returns control to the agent
+            self.complete(result)
+        else:
+            await self.session.generate_reply(
+                instructions="Continue the check-in and ask about any missing information."
+            )
+
+    @function_tool()
+    async def set_name(self, context: RunContext, name: str):
+        """Set the patient's name."""
+        self._state["name"] = name
+        await self._check_completion()
+
+    @function_tool()
+    async def set_age(self, context: RunContext, age: int):
+        """Set the patient's age in years."""
+        self._state["age"] = age
+        await self._check_completion()
+
+    @function_tool()
+    async def set_mood(self, context: RunContext, mood: str):
+        """Set the current mood in a short word/phrase (e.g. 'okay', 'stressed', 'calm')."""
+        self._state["mood"] = mood
+        await self._check_completion()
+
+    @function_tool()
+    async def set_stress(self, context: RunContext, stress: str):
+        """Set stress level: low, medium, high, or a short description."""
+        self._state["stress"] = stress
+        await self._check_completion()
+
+    @function_tool()
+    async def set_sleep_hours(self, context: RunContext, hours: float):
+        """Set how many hours the patient slept last night."""
+        self._state["sleepHours"] = hours
+        await self._check_completion()
+
+    @function_tool()
+    async def set_activity_minutes(self, context: RunContext, minutes: int):
+        """Set how many minutes of movement/exercise they had today."""
+        self._state["activityMinutes"] = minutes
+        await self._check_completion()
+
+    @function_tool()
+    async def set_main_concern(self, context: RunContext, concern: str):
+        """Set the patient's main wellness concern (e.g. sleep, focus, stress)."""
+        self._state["mainConcern"] = concern
+        await self._check_completion()
+
+    @function_tool()
+    async def set_reflection(self, context: RunContext, reflection: str):
+        """Set a short free-text reflection from the patient."""
+        self._state["reflection"] = reflection
+        await self._check_completion()
 
 
 class Assistant(Agent):
     def __init__(self) -> None:
         super().__init__(
             instructions=(
-                "You are a calm, supportive health & wellness voice companion.\n"
-                "Your goal is to guide the user through a short check-in and save their responses.\n"
-                "You MUST use these tools to store information: set_mood, set_stress, set_sleep, "
-                "set_activity, set_focus_area, set_reflection.\n"
-                "Collect these fields: mood, stress, sleepHours, activityMinutes, focusArea, reflection.\n"
-                "Ask one short question at a time (1 to 2 sentences) and keep your tone practical and non-dramatic.\n"
-                "Do NOT diagnose or give medical treatment. For serious issues, tell the user to seek a doctor or local emergency help.\n"
-                "Flow: ask how they feel → stress → last night's sleep → today's activity → main focus area → brief reflection.\n"
-                "Use tools as soon as a detail is clear. When all fields are stored, summarize their day in 2 to 3 sentences and end the check-in.\n"
+                "You are a calm, supportive wellness companion.\n"
+                "You will run a wellness check-in task to collect patient details.\n"
+                "Keep your tone practical and supportive, not overly emotional.\n"
             )
         )
-        # internal partial state
-        self._order: dict[str, object] = {}
 
-    async def _check_completion(self) -> None:
-        required = {"mood", "stress", "sleepHours", "activityMinutes", "focusArea", "reflection"}
-
-        if required.issubset(self._state.keys()):
-            checkin = WellnessCheckin(
-                mood=str(self._state["mood"]),
-                stress=str(self._state["stress"]),
-                sleepHours=float(self._state["sleepHours"]),
-                activityMinutes=int(self._state["activityMinutes"]),
-                focusArea=str(self._state["focusArea"]),
-                reflection=str(self._state["reflection"]),
+    async def on_enter(self) -> None:
+        # Greet and explain what will happen
+        await self.session.generate_reply(
+            instructions=(
+                "Greet the user briefly and explain that you'll ask a few questions "
+                "to understand how they are doing today. Then start the check-in."
             )
-            await self._on_checkin_complete(checkin)
-        else:
-            await self.session.generate_reply(
-                instructions="Continue the wellness check-in and ask about any missing details."
-            )
+        )
 
-    async def _on_checkin_complete(self, checkin: WellnessCheckin) -> None:
-        # 1) Save JSON file
+        # Run the task – this will block until all details are collected
+        checkin: PatientCheckin = await WellnessCheckinTask(chat_ctx=self.chat_ctx)
+
+        # Save to JSON
+        file_path = self._save_checkin_to_file(checkin)
+
+        # Speak a short summary back to the user
+        summary = (
+            f"Thanks, {checkin.name}. Today you're feeling {checkin.mood} with stress level {checkin.stress}. "
+            f"You slept about {checkin.sleepHours} hours and moved for roughly {checkin.activityMinutes} minutes. "
+            f"Your main concern right now is {checkin.mainConcern}."
+        )
+
+        await self.session.generate_reply(
+            instructions=(
+                "Summarize the check-in to the user using this summary text in 2–3 short sentences. "
+                "Do not give medical advice.\n"
+                f"{summary}\n"
+                f"Optionally, mention that their check-in has been saved."
+            )
+        )
+
+    def _save_checkin_to_file(self, checkin: PatientCheckin) -> Path:
         checkins_dir = Path(__file__).parent.parent / "checkins"
         checkins_dir.mkdir(exist_ok=True)
 
@@ -88,11 +196,13 @@ class Assistant(Agent):
         file_path = checkins_dir / f"checkin-{ts}.json"
 
         data = {
+            "name": checkin.name,
+            "age": checkin.age,
             "mood": checkin.mood,
             "stress": checkin.stress,
             "sleepHours": checkin.sleepHours,
             "activityMinutes": checkin.activityMinutes,
-            "focusArea": checkin.focusArea,
+            "mainConcern": checkin.mainConcern,
             "reflection": checkin.reflection,
         }
 
@@ -100,62 +210,8 @@ class Assistant(Agent):
             json.dump(data, f, indent=2)
 
         logger.info("Saved wellness check-in JSON to %s", file_path)
+        return file_path
 
-        # 2) Summarize back to the user
-        summary_prompt = (
-            "Summarize this wellness check-in in 2–3 short sentences. "
-            "Be encouraging, but do NOT give medical advice or diagnoses.\n\n"
-            f"Mood: {checkin.mood}\n"
-            f"Stress: {checkin.stress}\n"
-            f"Sleep hours: {checkin.sleepHours}\n"
-            f"Activity minutes: {checkin.activityMinutes}\n"
-            f"Focus area: {checkin.focusArea}\n"
-            f"Reflection: {checkin.reflection}\n"
-        )
-
-        await self.session.generate_reply(instructions=summary_prompt)
-
-    @function_tool()
-    async def set_mood(self, context: RunContext, mood: str):
-        """Set the user's current mood in a short word or phrase, e.g. 'tired', 'anxious', 'okay', 'calm'."""
-        logger.info("Setting mood to %s", mood)
-        self._state["mood"] = mood
-        await self._check_completion()
-
-    @function_tool()
-    async def set_stress(self, context: RunContext, stress: str):
-        """Set the user's stress level, e.g. 'low', 'medium', 'high', or a short phrase."""
-        logger.info("Setting stress to %s", stress)
-        self._state["stress"] = stress
-        await self._check_completion()
-
-    @function_tool()
-    async def set_sleep(self, context: RunContext, hours: float):
-        """Set how many hours the user slept last night. Use a number like 6.5."""
-        logger.info("Setting sleepHours to %s", hours)
-        self._state["sleepHours"] = hours
-        await self._check_completion()
-
-    @function_tool()
-    async def set_activity(self, context: RunContext, minutes: int):
-        """Set how many minutes of movement/exercise the user had today."""
-        logger.info("Setting activityMinutes to %s", minutes)
-        self._state["activityMinutes"] = minutes
-        await self._check_completion()
-
-    @function_tool()
-    async def set_focus_area(self, context: RunContext, focus: str):
-        """Set the user's main focus area, e.g. 'sleep', 'stress', 'fitness', 'diet', 'productivity'."""
-        logger.info("Setting focusArea to %s", focus)
-        self._state["focusArea"] = focus
-        await self._check_completion()
-
-    @function_tool()
-    async def set_reflection(self, context: RunContext, reflection: str):
-        """Set a short free-text reflection from the user about their day or how they feel."""
-        logger.info("Setting reflection")
-        self._state["reflection"] = reflection
-        await self._check_completion()
 
     # To add tools, use the @function_tool decorator.
     # Here's an example that adds a simple weather tool.
