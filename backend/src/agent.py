@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 import json
 from datetime import datetime
-from typing import Dict, Any
-from livekit.plugins import murf
+from typing import Dict, Any, Optional
+import re
 
 from dotenv import load_dotenv
 from livekit.agents import (
@@ -26,52 +26,26 @@ from livekit.agents import (
 from livekit.plugins import murf, silero, google, deepgram, noise_cancellation
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
-logger = logging.getLogger("agent")
+logger = logging.getLogger("sdr_agent")
+
+BASE = Path(__file__).parent.parent  # backend/
+SHARED = BASE / "shared data"
+FAQ_PATH = SHARED / "lenskart_faq.json"
+LEADS_DIR = BASE / "leads"
+LEADS_DIR.mkdir(exist_ok=True)
 
 load_dotenv(".env.local")
 
 
+# class Assistant(Agent):
+#     def __init__(self) -> None:
+#         super().__init__(
+#             instructions="""You are a helpful voice AI assistant. The user is interacting with you via voice, even if you perceive the conversation as text.
+#             You eagerly assist users with their questions by providing information from your extensive knowledge.
+#             Your responses are concise, to the point, and without any complex formatting or punctuation including emojis, asterisks, or other symbols.
+#             You are curious, friendly, and have a sense of humor.""",
+#         )
 
-# ...
-
-@dataclass
-class Concept:
-    id: str
-    title: str
-    summary: str
-    sample_question: str
-
-def load_concepts() -> Dict[str, Concept]:
-    content_path = Path(__file__).parent.parent / "shared data" / "day4_tutor_content.json"
-    with content_path.open("r", encoding="utf-8") as f:
-        items = json.load(f)
-    concepts = {item["id"]: Concept(**item) for item in items}
-    return concepts
-
-
-class TutorAgentBase(Agent):
-    def __init__(self, chat_ctx, concepts, concept_id, instructions, tts):
-        # pass chat_ctx and tts to Agent so session and voice are wired correctly
-        super().__init__(chat_ctx=chat_ctx, instructions=instructions, tts=tts)
-        # DO NOT assign self.chat_ctx directly — Agent provides a read-only property
-        self._concepts = concepts
-        self._current = concept_id
-        # keep tts reference if you want, but Agent already stores it
-        self._tts = tts   # optional private copy
-
-
-
-    @property
-    def concept(self):
-        return self._concepts[self._current]
-
-    @function_tool()
-    async def change_concept(self, context: RunContext, concept_id: str):
-        if concept_id not in self._concepts:
-            await self.session.generate_reply(instructions=f"Concept '{concept_id}' not available. Options: {', '.join(self._concepts.keys())}")
-            return
-        self._current = concept_id
-        await self.session.generate_reply(instructions=f"Switched to {self.concept.title}.")
     # To add tools, use the @function_tool decorator.
     # Here's an example that adds a simple weather tool.
     # You also have to add `from livekit.agents import function_tool, RunContext` to the top of this file
@@ -89,75 +63,160 @@ class TutorAgentBase(Agent):
     #
     #     return "sunny with a temperature of 70 degrees."
 
-class LearnAgent(TutorAgentBase):
-    def __init__(self, chat_ctx, concepts, concept_id):
-        tts = murf.TTS(voice="en-US-matthew", style="Conversation", tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2), text_pacing=True)
-        super().__init__(chat_ctx, concepts, concept_id,
-            instructions=(
-                "LEARN mode: Explain the current concept clearly using the summary. Give one short example. Ask if user wants quiz, teach-back, or another example."
-            ),
-            tts=tts)
+def load_faq() -> Dict[str, Any]:
+    if not FAQ_PATH.exists():
+        logger.warning("FAQ file missing: %s", FAQ_PATH)
+        return {"company": {"name": "Lenskart"}, "faq_entries": []}
+    with open(FAQ_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
 
-    async def on_enter(self):
-        c = self.concept
-        await self.session.generate_reply(instructions=f"Explain '{c.title}': {c.summary}\nThen offer an example and ask if they'd like quiz or teach-back.")
+def find_faq_answer_simple(faq_entries, text: str) -> Optional[str]:
+    txt = text.lower()
+    best_score = 0
+    best_answer = None
+    for e in faq_entries:
+        hay = (e.get("question","") + " " + e.get("answer","")).lower()
+        tokens = set(re.findall(r"\w+", hay))
+        score = sum(1 for t in tokens if t in txt)
+        if score > best_score:
+            best_score = score
+            best_answer = e.get("answer")
+    if best_score > 0:
+        return best_answer
+    return None
 
-class QuizAgent(TutorAgentBase):
-    def __init__(self, chat_ctx, concepts, concept_id):
-        tts = murf.TTS(voice="en-US-alicia", style="Conversation", tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2), text_pacing=True)
-        super().__init__(chat_ctx, concepts, concept_id,
-            instructions=("QUIZ mode: Ask the sample question and up to 2 short follow-ups based on the user's answer. Provide brief feedback."),
-            tts=tts)
+def save_lead(lead: Dict[str,Any]) -> str:
+    lead_copy = dict(lead)
+    lead_copy["created_at"] = datetime.utcnow().isoformat() + "Z"
+    # sanitize name for filename
+    name = lead_copy.get("name", "unknown").replace(" ", "_")
+    fname = LEADS_DIR / f"lead_{name}_{lead_copy['created_at'].replace(':','-')}.json"
+    with open(fname, "w", encoding="utf-8") as f:
+        json.dump(lead_copy, f, indent=2)
+    logger.info("Saved lead to %s", fname)
+    return str(fname)
 
-    async def on_enter(self):
-        c = self.concept
-        await self.session.generate_reply(instructions=f"Quiz: {c.sample_question}\nWait for answer then ask follow-up.")
-
-
-class TeachBackAgent(TutorAgentBase):
-    def __init__(self, chat_ctx, concepts, concept_id):
-        tts = murf.TTS(voice="en-US-ken", style="Conversation", tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2), text_pacing=True)
-        super().__init__(chat_ctx, concepts, concept_id,
-            instructions=("TEACH_BACK mode: Ask the user to teach the concept back. After they speak, give 2-sentence qualitative feedback: 1 thing correct, 1 suggestion."),
-            tts=tts)
-
-    async def on_enter(self):
-        c = self.concept
-        await self.session.generate_reply(instructions=f"Please explain the concept '{c.title}' to me in your own words.")
-
+class SalesAgent(Agent):
     
-
-class RouterAgent(Agent):
-    def __init__(self, concepts):
-        super().__init__(instructions="Router: Greet user, explain modes (learn/quiz/teach_back), ask concept choice. Use tools to hand off.")
-        self._concepts = concepts
+    def __init__(self):
+        kb = load_faq()
+        instructions = (
+            "You are Lenskart SDR. Use ONLY the provided FAQ content to answer product/company/pricing questions. "
+            "Collect lead fields naturally: name, company, email, role, use_case, team_size, timeline. "
+            "Once you have collected information, use the save_lead_info tool to save it. "
+            "Confirm key fields before saving. If user asks for info not in FAQ, say: 'I don't have that detail here — would you like me to check the site or get a sales rep to follow up?'"
+        )
+        super().__init__(instructions=instructions)
+        self.kb = kb
+        self.faq_entries = kb.get("faq_entries", [])
+        self.company = kb.get("company", {"name":"Lenskart"})
+        self._lead: Dict[str,Any] = {}
 
     async def on_enter(self):
-        await self.session.generate_reply(instructions="Hi — choose a mode (learn/quiz/teach_back) and a topic (e.g. variables or loops).")
+        await self.session.generate_reply(instructions=(
+            f"Hi — welcome to {self.company.get('name','Lenskart')}! I'm the SDR here. What brought you here today and what are you trying to achieve?"
+        ))
+    
+    @function_tool
+    async def save_lead_info(
+        self,
+        context: RunContext,
+        name: Optional[str] = None,
+        company: Optional[str] = None,
+        email: Optional[str] = None,
+        role: Optional[str] = None,
+        use_case: Optional[str] = None,
+        team_size: Optional[str] = None,
+        timeline: Optional[str] = None
+    ):
+        """Save lead information collected during the conversation.
+        
+        Args:
+            name: Full name of the lead
+            company: Company name
+            email: Email address
+            role: Job role/title
+            use_case: What they want to use Lenskart for
+            team_size: Size of their team
+            timeline: When they plan to start/purchase
+        """
+        if name:
+            self._lead["name"] = name
+        if company:
+            self._lead["company"] = company
+        if email:
+            self._lead["email"] = email
+        if role:
+            self._lead["role"] = role
+        if use_case:
+            self._lead["use_case"] = use_case
+        if team_size:
+            self._lead["team_size"] = team_size
+        if timeline:
+            self._lead["timeline"] = timeline
+        
+        # Save to file
+        filepath = save_lead(self._lead)
+        logger.info(f"Lead saved to {filepath}")
+        
+        return f"Lead information saved successfully for {self._lead.get('name', 'contact')}"
 
-    def _validate(self, cid: str):
-        if cid not in self._concepts:
-            raise ValueError(f"Unknown concept {cid}")
+    async def handle_turn(self, user_text: str):
+        ut = user_text.strip()
+        # End-of-call detection
+        if re.search(r"\b(thats all|that's all|i'm done|im done|thanks|thank you|bye)\b", ut.lower()):
+            # confirm unsaved required fields? just produce summary and save whatever collected
+            summary = (
+                f"Summary: {self._lead.get('name','Unknown')} from {self._lead.get('company','Unknown')}. "
+                f"Role: {self._lead.get('role','Unknown')}. Use case: {self._lead.get('use_case','Not specified')}. "
+                f"Timeline: {self._lead.get('timeline','Not specified')}."
+            )
+            save_lead(self._lead)
+            await self.session.generate_reply(instructions=f"{summary} I saved this lead and will pass it to our sales team. Thanks!")
+            return
 
-    @function_tool()
-    async def go_to_learn(self, context: RunContext, concept_id: str):
-        self._validate(concept_id)
-        agent = LearnAgent(chat_ctx=self.chat_ctx, concepts=self._concepts, concept_id=concept_id)
-        return agent, f"Switching to Learn mode for {concept_id}"
+        # Try FAQ answer first
+        answer = find_faq_answer_simple(self.faq_entries, ut)
+        if answer:
+            await self.session.generate_reply(instructions=answer)
+            # continue to collect lead info if user provides it in same utterance
 
-    @function_tool()
-    async def go_to_quiz(self, context: RunContext, concept_id: str):
-        self._validate(concept_id)
-        agent = QuizAgent(chat_ctx=self.chat_ctx, concepts=self._concepts, concept_id=concept_id)
-        return agent, f"Switching to Quiz mode for {concept_id}"
+        # Slot-filling: email
+        email_match = re.search(r"([a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)", ut)
+        if email_match:
+            self._lead["email"] = email_match.group(1)
+            await self.session.generate_reply(instructions=f"Got your email as {self._lead['email']}, correct?")
+            return
 
-    @function_tool()
-    async def go_to_teach_back(self, context: RunContext, concept_id: str):
-        self._validate(concept_id)
-        agent = TeachBackAgent(chat_ctx=self.chat_ctx, concepts=self._concepts, concept_id=concept_id)
-        return agent, f"Switching to Teach-Back mode for {concept_id}"
+        # Slot-filling: name
+        name_match = re.search(r"(my name is|i am|i'm)\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)?)", ut)
+        if name_match:
+            self._lead["name"] = name_match.group(2)
+            await self.session.generate_reply(instructions=f"Nice to meet you, {self._lead['name']}. Which company are you with?")
+            return
 
+        # If user answers a confirmation like "yes" to previous question, store if applicable (simple)
+        if ut.lower() in {"yes", "yep", "correct", "that's right", "right"} and "email" in self._lead and not self._lead.get("_email_confirmed"):
+            self._lead["_email_confirmed"] = True
+            await self.session.generate_reply(instructions="Thanks — email confirmed. What's your role at the company?")
+            return
 
+        # Ask for next missing field
+        for field, prompt in [
+            ("name", "Could I get your full name, please?"),
+            ("company", "Which company are you with?"),
+            ("email", "What is the best email to reach you on?"),
+            ("role", "What's your role there?"),
+            ("use_case", "Briefly, what do you want to use Lenskart for?"),
+            ("team_size", "How big is your team? (number or small/medium/large)"),
+            ("timeline", "When are you planning to start or purchase? (now / soon / later)")
+        ]:
+            if field not in self._lead:
+                await self.session.generate_reply(instructions=prompt)
+                return
+
+        # All collected
+        await self.session.generate_reply(instructions="Thanks — I have your details. Anything else I can answer about Lenskart?")
 
 def prewarm(proc: JobProcess):
     proc.userdata["vad"] = silero.VAD.load()
@@ -183,7 +242,7 @@ async def entrypoint(ctx: JobContext):
         # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
         # See all available models as well as voice selections at https://docs.livekit.io/agents/models/tts/
         tts=murf.TTS(
-                voice="en-US-matthew", 
+                voice="en-US-matthew",   # change to en-IN-aishwarya if you want female Indian voice
                 style="Conversation",
                 tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2),
                 text_pacing=True
@@ -231,12 +290,35 @@ async def entrypoint(ctx: JobContext):
     # await avatar.start(session, room=ctx.room)
 
     # Start the session, which initializes the voice pipeline and warms up the models
-    concepts = load_concepts()
-    await session.start(
-        agent=RouterAgent(concepts=concepts),
-        room=ctx.room,
-        room_input_options=RoomInputOptions(noise_cancellation=noise_cancellation.BVC()),
+
+    # Load Lenskart FAQ
+    faq_path = Path(__file__).parent.parent / "shared data" / "lenskart_faq.json"
+    if not faq_path.exists():
+        logger.warning(f"FAQ file not found at: {faq_path}")
+
+    # SDR voice (TTS)
+    sdr_tts = murf.TTS(
+        voice="en-US-matthew",   # change to en-IN-aishwarya if you want female Indian voice
+        style="Conversation",
+        tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2),
+        text_pacing=True
     )
+
+    # # IMPORTANT: pass session.chat_ctx (not session)
+    # sdr_agent = SalesAgent(chat_ctx=session.chat_ctx, tts=sdr_tts)
+
+    # use the underlying chat context object from the session
+    sdr_agent = SalesAgent()
+
+
+    # Start session with SDR agent ONLY
+    await session.start(
+      agent=sdr_agent,
+      room=ctx.room,
+      room_input_options=RoomInputOptions(noise_cancellation=noise_cancellation.BVC()),
+    )
+
+
 
 
     # Join the room and connect to the user
@@ -247,4 +329,4 @@ if __name__ == "__main__":
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, prewarm_fnc=prewarm))
 
     print(Path(__file__).parent.parent.resolve())
-    print((Path(__file__).parent.parent / "shared data" / "day4_tutor_content.json").exists())
+    print((Path(__file__).parent.parent / "shared data" / "lenskart_faq.json").exists())
