@@ -1,42 +1,45 @@
 import logging
-
-from dataclasses import dataclass
 from pathlib import Path
 import json
 from datetime import datetime
-from typing import Dict, Any, Optional
-import re
+from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
 from livekit.agents import (
     Agent,
-    AgentTask,
     AgentSession,
     JobContext,
     JobProcess,
-    MetricsCollectedEvent,
     RoomInputOptions,
     WorkerOptions,
     cli,
-    metrics,
     tokenize,
-    function_tool,
-    RunContext
 )
 from livekit.plugins import murf, silero, google, deepgram, noise_cancellation
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
-logger = logging.getLogger("sdr_agent")
+logger = logging.getLogger("food_ordering_agent")
 
 BASE = Path(__file__).parent.parent  # backend/
 SHARED = BASE / "shared data"
-FAQ_PATH = SHARED / "lenskart_faq.json"
-LEADS_DIR = BASE / "leads"
-LEADS_DIR.mkdir(exist_ok=True)
+MENU_PATH = SHARED / "restaurant_menu.json"
+ORDERS_DIR = BASE / "orders"
+ORDERS_DIR.mkdir(exist_ok=True)
 
 load_dotenv(".env.local")
 
-
+# UPDATED BUNDLES: Combining Restaurant Meals + Grocery Recipes
+BUNDLES = {
+    # Restaurant Bundles (Hot Meals)
+    "dinner": ["Butter Chicken", "Butter Roti", "Jeera Rice"],
+    "veg meal": ["Paneer Butter Masala", "Naan", "Plain Rice"],
+    "party starter": ["Paneer Tikka", "Chicken 65", "Spring Rolls"],
+    
+    # Grocery Bundles (Ingredients)
+    "sandwich": ["Whole Wheat Bread", "Butter", "Cheese Slices"],
+    "breakfast": ["Milk (1L)", "Whole Wheat Bread", "Butter"],
+    "rice curry": ["Basmati Rice (1kg)", "Tomatoes (1kg)", "Onions (1kg)"]
+}
 # class Assistant(Agent):
 #     def __init__(self) -> None:
 #         super().__init__(
@@ -63,146 +66,261 @@ load_dotenv(".env.local")
     #
     #     return "sunny with a temperature of 70 degrees."
 
-BASE = Path(__file__).parent.parent
-DB = BASE / "shared data" / "airtel_fraud_cases.json"
+class FoodOrderingAgent(Agent):
+    def __init__(self):
+        # Load menu
+        try:
+            with open(MENU_PATH, "r", encoding="utf-8") as f:
+                self.menu_data = json.load(f)
+        except FileNotFoundError:
+            logger.error(f"Menu file not found at {MENU_PATH}")
+            self.menu_data = {"restaurant": {"name": "Default"}, "menu": []}
 
-def load_cases():
-    with open(DB, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-def save_cases(cases):
-    with open(DB, "w", encoding="utf-8") as f:
-        json.dump(cases, f, indent=2)
-
-
-class FraudAgent(Agent):
-    def __init__(self, chat_ctx, tts=None):
-        base = Path(__file__).parent.parent
-        db_path = base / "shared data" / "airtel_fraud_cases.json"
-
-        with open(db_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-
-        # Data is a direct list of cases
-        self.case = data[0]
+        self.restaurant_name = self.menu_data["restaurant"].get("name", "Spice Garden & Mart")
+        self.categories = self.menu_data.get("menu", [])
         
-        self.db_path = db_path
-
         instructions = (
-            "You are a fraud detection representative from Airtel Payments Bank. "
-            "Use calm, professional language. Never ask for PINs or full card numbers. "
-            "Verify the user only using the security question."
+            f"You are Alex, a helpful assistant at {self.restaurant_name}. "
+            "You can help customers order hot meals from the restaurant OR buy groceries for their home. "
+            "If a user asks for 'ingredients', look for grocery items. "
+            "If they ask for a 'meal', look for restaurant items. "
+            "Be friendly, concise, and helpful. "
+            "Start by greeting the customer and asking for their name."
         )
-
-        super().__init__(chat_ctx=chat_ctx, instructions=instructions, tts=tts)
-
-        self.state = "ask_name"
-        self.verified = False
-
+        
+        super().__init__(instructions=instructions)
+        
+        self.customer_name = None
+        self.phone_number = None
+        self.delivery_address = None
+        self.cart = []
+        self.order_id = None
+        
     async def on_enter(self):
+        # 2. INTRO UPDATE: Welcome to the "Mart" as well
         await self.session.generate_reply(
-            instructions="Hello, this is Airtel Payments Bank Fraud Prevention Desk. "
-                         "We detected unusual activity on your account. May I know your name?"
+            instructions=(
+                f"Hello! Welcome to {self.restaurant_name}. "
+                "I'm Alex. I can help you order a hot dinner or just pick up some groceries for the week. "
+                "Who am I speaking with?"
+            )
         )
-
+    
     async def handle_turn(self, user_text: str):
         ut = user_text.lower().strip()
-
-        # --- Step 1: Ask for username ---
-        if self.state == "ask_name":
-            if self.case["userName"].lower() in ut:
-                self.state = "verify"
-                await self.session.generate_reply(
-                    instructions=f"Thank you. Please answer this security question: "
-                                 f"{self.case['securityQuestion']}"
+        
+        if self.state == "greeting":
+            self.customer_name = user_text.strip()
+            self.state = "ordering"
+            
+            await self.session.generate_reply(
+                instructions=(
+                    f"Hi {self.customer_name}! "
+                    "Are you looking to order a meal to eat now, or do you need to buy some groceries?"
                 )
-            else:
-                await self.session.generate_reply(
-                    instructions="Sorry, I couldn't match that name. Please state your full name."
-                )
+            )
             return
-
-        # --- Step 2: Verify ---
-        if self.state == "verify":
-            if self.case["securityAnswer"].lower() in ut:
-                self.state = "ask_confirmation"
+        
+        if self.state == "ordering":
+            # Checkout
+            if any(phrase in ut for phrase in ["that's all", "finish", "checkout", "place order", "done"]):
+                if not self.cart:
+                    await self.session.generate_reply(
+                        instructions="Your cart is empty! Can I get you some fresh veggies or maybe a Biryani?"
+                    )
+                    return
+                
+                self.state = "confirm_order"
+                cart_summary = self._get_cart_summary()
                 await self.session.generate_reply(
                     instructions=(
-                        "Verification successful. Here is the suspicious transaction: "
-                        f"A charge of {self.case['transactionAmount']} at {self.case['merchant']} "
-                        f"in {self.case['location']} on {self.case['timestamp']} "
-                        f"using card ending with {self.case['cardEnding']}. "
-                        "Did you make this transaction?"
+                        f"Got it. Let's wrap this up. "
+                        f"You have: {cart_summary}. "
+                        "Does that look right?"
+                    )
+                )
+                return
+
+            # View Cart
+            if any(phrase in ut for phrase in ["what's in my cart", "read back", "list items"]):
+                cart_summary = self._get_cart_summary()
+                await self.session.generate_reply(
+                    instructions=f"Currently, you have: {cart_summary}. What else?"
+                )
+                return
+
+            # 3. BUNDLE LOGIC: Handles "Ingredients for Sandwich" (Grocery) vs "Dinner" (Restaurant)
+            added_bundle = self._process_bundle_request(ut)
+            if added_bundle:
+                items_text = ", ".join(added_bundle)
+                await self.session.generate_reply(
+                    instructions=(
+                        f"Smart choice! I've added all the essentials: {items_text}. "
+                        "Anything else?"
+                    )
+                )
+                return
+
+            # Single Item Add
+            added_item = self._process_add_request(ut)
+            if added_item:
+                # 4. SMART SUGGESTIONS: Distinguish Restaurant Upsell vs Grocery Upsell
+                upsell = ""
+                
+                # If they bought a spicy restaurant meal -> Suggest Lassi
+                if self._is_spicy_category(added_item):
+                    upsell = " A Mango Lassi would cool that down perfectly. Want one?"
+                
+                # If they bought Grocery Bread -> Suggest Butter (if not in cart)
+                elif "bread" in added_item['name'].lower() and not self._has_item_in_cart("butter"):
+                    upsell = " Do you need some Butter to go with that bread?"
+                
+                await self.session.generate_reply(
+                    instructions=(
+                        f"Added {added_item['name']}.{upsell} "
+                        "What's next?"
                     )
                 )
             else:
-                await self._fail_verification()
-            return
-
-        # --- Step 3: Confirm or deny ---
-        if self.state == "ask_confirmation":
-            if any(x in ut for x in ["yes", "i did", "yeah", "yep"]):
-                self._update_case("confirmed_safe", "Customer confirmed the transaction.")
                 await self.session.generate_reply(
-                    instructions="Thanks for confirming. The transaction is marked as safe. Have a nice day."
+                    instructions=(
+                        "I couldn't find that item. "
+                        "We have Restaurant specials and a full Grocery section. "
+                        "Could you be more specific?"
+                    )
+                )
+            return
+        
+        if self.state == "confirm_order":
+            if any(word in ut for word in ["yes", "correct", "right", "sure", "yep"]):
+                self.state = "get_phone"
+                await self.session.generate_reply(
+                    instructions="Great. Please share your phone number for the delivery."
                 )
             else:
-                self._update_case("confirmed_fraud", "Customer denied the transaction.")
+                self.state = "ordering"
                 await self.session.generate_reply(
-                    instructions="Thank you. We have blocked your card and raised a dispute. "
-                                 "Our team will follow up with you shortly."
+                    instructions="No problem. What item would you like to change?"
                 )
             return
+        
+        if self.state == "get_phone":
+            import re
+            digits = re.sub(r'\D', '', ut)
+            if len(digits) >= 10:
+                self.phone_number = digits
+                self.state = "get_address"
+                await self.session.generate_reply(
+                    instructions="Got it. And the delivery address?"
+                )
+            else:
+                await self.session.generate_reply(
+                    instructions="Please provide a valid 10-digit phone number."
+                )
+            return
+        
+        if self.state == "get_address":
+            self.delivery_address = user_text.strip()
+            self.state = "finished"
+            
+            self._save_order()
+            total_price = sum(item["price"] * item["quantity"] for item in self.cart)
+            
+            await self.session.generate_reply(
+                instructions=(
+                    f"Order #{self.order_id} placed! "
+                    f"Total: ₹{total_price}. Delivering to {self.delivery_address}. "
+                    "Thank you for shopping at Spice Garden & Mart!"
+                )
+            )
+            return
 
-    async def _fail_verification(self):
-        self._update_case("verification_failed", "User failed identity verification.")
-        await self.session.generate_reply(
-            instructions="Sorry, I cannot verify your identity. "
-                         "Please contact Airtel Payments Bank support."
-        )
+    # --- Helpers ---
 
-    def _update_case(self, status, note):
-        self.case["status"] = status
-        self.case["outcomeNote"] = note
+    def _process_add_request(self, text: str) -> Optional[Dict]:
+        text = text.lower()
+        for category in self.categories:
+            for item in category["items"]:
+                if item["name"].lower() in text:
+                    qty = 1
+                    import re
+                    match = re.search(r'(\d+)\s+' + re.escape(item["name"].lower()), text)
+                    if match:
+                        qty = int(match.group(1))
 
-        # Save as a list (matching the original structure)
-        with open(self.db_path, "w", encoding="utf-8") as f:
-            json.dump([self.case], f, indent=2)
+                    cart_item = {
+                        "id": item["id"],
+                        "name": item["name"],
+                        "price": item["price"],
+                        "quantity": qty,
+                        "category": category["category"]
+                    }
+                    self.cart.append(cart_item)
+                    return cart_item
+        return None
 
-        print("Updated fraud case:", self.case)
+    def _process_bundle_request(self, text: str) -> Optional[List[str]]:
+        text = text.lower()
+        added_names = []
+        
+        for bundle_name, items in BUNDLES.items():
+            if bundle_name in text:
+                for item_name in items:
+                    menu_item = self._find_item_data(item_name)
+                    if menu_item:
+                        self.cart.append({
+                            "id": menu_item["id"],
+                            "name": menu_item["name"],
+                            "price": menu_item["price"],
+                            "quantity": 1,
+                            "category": "Bundle"
+                        })
+                        added_names.append(menu_item["name"])
+                return added_names if added_names else None
+        return None
 
+    def _find_item_data(self, name: str) -> Optional[Dict]:
+        for category in self.categories:
+            for item in category["items"]:
+                if item["name"].lower() == name.lower():
+                    return item
+        return None
 
+    def _is_spicy_category(self, item: Dict) -> bool:
+        return item.get("category") in ["Main Course", "Starters"]
 
+    def _has_item_in_cart(self, item_name_part: str) -> bool:
+        for item in self.cart:
+            if item_name_part.lower() in item["name"].lower():
+                return True
+        return False
 
-def prewarm(proc: JobProcess):
-    proc.userdata["vad"] = silero.VAD.load()
+    def _get_cart_summary(self) -> str:
+        if not self.cart:
+            return "nothing"
+        summary = [f"{i['quantity']} {i['name']}" for i in self.cart]
+        total = sum(i["price"] * i["quantity"] for i in self.cart)
+        return f"{', '.join(summary)} (Total: ₹{total})"
 
-
-async def entrypoint(ctx: JobContext):
-
-    session = AgentSession(
-        stt=deepgram.STT(model="nova-3"),
-        llm=google.LLM(model="gemini-2.5-flash"),
-        tts=murf.TTS(
-            voice="en-US-matthew",   # change to en-IN-aish
-            style="Conversation",
-            tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2),
-            text_pacing=True
-        ),
-        turn_detection=MultilingualModel(),
-        vad=ctx.proc.userdata["vad"],
-        preemptive_generation=True,
-    )
-
-    fraud_agent = FraudAgent(chat_ctx=session._chat_ctx, tts=session._tts)
-
-    await session.start(
-        agent=fraud_agent,
-        room=ctx.room,
-        room_input_options=RoomInputOptions(noise_cancellation=noise_cancellation.BVC()),
-    )
-
-    await ctx.connect()
+    def _save_order(self):
+        self.order_id = f"ORD-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        data = {
+            "order_id": self.order_id,
+            "timestamp": datetime.now().isoformat(),
+            "customer": {
+                "name": self.customer_name,
+                "phone": self.phone_number,
+                "address": self.delivery_address
+            },
+            "items": self.cart,
+            "total": sum(i["price"] * i["quantity"] for i in self.cart),
+            "status": "placed"
+        }
+        
+        filepath = ORDERS_DIR / f"{self.order_id}.json"
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        logger.info(f"Saved order {self.order_id}")
 
 
 
@@ -301,7 +419,35 @@ async def entrypoint(ctx: JobContext):
     # # Join the room and connect to the user
     # await ctx.connect()
 
+def prewarm(proc: JobProcess):
+    proc.userdata["vad"] = silero.VAD.load()
 
+async def entrypoint(ctx: JobContext):
+    session = AgentSession(
+        stt=deepgram.STT(model="nova-3"),
+        llm=google.LLM(model="gemini-2.5-flash"),
+        tts=murf.TTS(
+            voice="en-US-matthew", 
+            style="Conversation",
+            tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2),
+            text_pacing=True
+        ),
+        turn_detection=MultilingualModel(),
+        vad=ctx.proc.userdata["vad"],
+        preemptive_generation=True,
+    )
+    
+    # Initialize agent without passing session internals
+    food_agent = FoodOrderingAgent()
+    
+    await session.start(
+        agent=food_agent,
+        room=ctx.room,
+        room_input_options=RoomInputOptions(noise_cancellation=noise_cancellation.BVC()),
+    )
+    
+    await ctx.connect()
+    
 if __name__ == "__main__":
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, prewarm_fnc=prewarm))
 

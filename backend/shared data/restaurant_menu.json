@@ -1,0 +1,248 @@
+{
+  "restaurant": {
+    "name": "Gomal's Restaurant and Grocery",
+    "cuisine": "Indian",
+    "phone": "1800-123-4567",
+    "delivery_time": "30-45 minutes"
+  },
+  "menu": [
+    {
+      "category": "Starters",
+      "items": [
+        {
+          "id": "S001",
+          "name": "Paneer Tikka",
+          "description": "Grilled cottage cheese with Indian spices",
+          "price": 180,
+          "vegetarian": true,
+          "popular": true
+        },
+        {
+          "id": "S002",
+          "name": "Chicken 65",
+          "description": "Spicy fried chicken bites",
+          "price": 220,
+          "vegetarian": false,
+          "popular": true
+        },
+        {
+          "id": "S003",
+          "name": "Samosa",
+          "description": "Crispy pastry filled with spiced potatoes",
+          "price": 50,
+          "vegetarian": true,
+          "popular": false
+        },
+        {
+          "id": "S004",
+          "name": "Spring Rolls",
+          "description": "Vegetable spring rolls with sweet chili sauce",
+          "price": 120,
+          "vegetarian": true,
+          "popular": false
+        }
+      ]
+    },
+    {
+      "category": "Main Course",
+      "items": [
+        {
+          "id": "M001",
+          "name": "Butter Chicken",
+          "description": "Creamy tomato-based chicken curry",
+          "price": 320,
+          "vegetarian": false,
+          "popular": true
+        },
+        {
+          "id": "M002",
+          "name": "Paneer Butter Masala",
+          "description": "Cottage cheese in rich tomato gravy",
+          "price": 280,
+          "vegetarian": true,
+          "popular": true
+        },
+        {
+          "id": "M003",
+          "name": "Dal Makhani",
+          "description": "Black lentils cooked with butter and cream",
+          "price": 240,
+          "vegetarian": true,
+          "popular": true
+        },
+        {
+          "id": "M004",
+          "name": "Chicken Biryani",
+          "description": "Fragrant rice with spiced chicken",
+          "price": 350,
+          "vegetarian": false,
+          "popular": true
+        },
+        {
+          "id": "M005",
+          "name": "Veg Biryani",
+          "description": "Fragrant rice with mixed vegetables",
+          "price": 280,
+          "vegetarian": true,
+          "popular": false
+        },
+        {
+          "id": "M006",
+          "name": "Palak Paneer",
+          "description": "Cottage cheese in spinach gravy",
+          "price": 260,
+          "vegetarian": true,
+          "popular": false
+        }
+      ]
+    },
+    {
+      "category": "Breads",
+      "items": [
+        {
+          "id": "B001",
+          "name": "Naan",
+          "description": "Indian flatbread",
+          "price": 40,
+          "vegetarian": true,
+          "popular": true
+        },
+        {
+          "id": "B002",
+          "name": "Garlic Naan",
+          "description": "Naan with garlic and butter",
+          "price": 60,
+          "vegetarian": true,
+          "popular": true
+        },
+        {
+          "id": "B003",
+          "name": "Butter Roti",
+          "description": "Whole wheat flatbread with butter",
+          "price": 35,
+          "vegetarian": true,
+          "popular": false
+        },
+        {
+          "id": "B004",
+          "name": "Cheese Naan",
+          "description": "Naan stuffed with cheese",
+          "price": 80,
+          "vegetarian": true,
+          "popular": false
+        }
+      ]
+    },
+    {
+      "category": "Rice",
+      "items": [
+        {
+          "id": "R001",
+          "name": "Jeera Rice",
+          "description": "Basmati rice with cumin",
+          "price": 120,
+          "vegetarian": true,
+          "popular": true
+        },
+        {
+          "id": "R002",
+          "name": "Plain Rice",
+          "description": "Steamed basmati rice",
+          "price": 100,
+          "vegetarian": true,
+          "popular": false
+        }
+      ]
+    },
+    {
+      "category": "Desserts",
+      "items": [
+        {
+          "id": "D001",
+          "name": "Gulab Jamun",
+          "description": "Sweet milk dumplings in sugar syrup",
+          "price": 80,
+          "vegetarian": true,
+          "popular": true
+        },
+        {
+          "id": "D002",
+          "name": "Rasmalai",
+          "description": "Soft cheese patties in sweet milk",
+          "price": 100,
+          "vegetarian": true,
+          "popular": true
+        },
+        {
+          "id": "D003",
+          "name": "Ice Cream",
+          "description": "Vanilla, Chocolate, or Mango",
+          "price": 70,
+          "vegetarian": true,
+          "popular": false
+        }
+      ]
+    },
+    {
+      "category": "Beverages",
+      "items": [
+        {
+          "id": "BV001",
+          "name": "Mango Lassi",
+          "description": "Sweet yogurt drink with mango",
+          "price": 80,
+          "vegetarian": true,
+          "popular": true
+        },
+        {
+          "id": "BV002",
+          "name": "Masala Chai",
+          "description": "Indian spiced tea",
+          "price": 40,
+          "vegetarian": true,
+          "popular": true
+        },
+        {
+          "id": "BV003",
+          "name": "Cold Coffee",
+          "description": "Iced coffee with milk",
+          "price": 90,
+          "vegetarian": true,
+          "popular": false
+        },
+        {
+          "id": "BV004",
+          "name": "Fresh Lime Soda",
+          "description": "Refreshing lime and soda",
+          "price": 60,
+          "vegetarian": true,
+          "popular": false
+        }
+      ]
+    },
+    {
+      "category": "Groceries - Pantry",
+      "items": [
+        { "id": "G001", "name": "Whole Wheat Bread", "price": 45, "popular": true },
+        { "id": "G002", "name": "Peanut Butter", "price": 180, "popular": false },
+        { "id": "G003", "name": "Basmati Rice (1kg)", "price": 120, "popular": true }
+      ]
+    },
+    {
+      "category": "Groceries - Dairy",
+      "items": [
+        { "id": "G004", "name": "Milk (1L)", "price": 60, "popular": true },
+        { "id": "G005", "name": "Butter", "price": 55, "popular": true },
+        { "id": "G006", "name": "Cheese Slices", "price": 110, "popular": false }
+      ]
+    },
+    {
+      "category": "Groceries - Fresh",
+      "items": [
+        { "id": "G007", "name": "Tomatoes (1kg)", "price": 40, "popular": true },
+        { "id": "G008", "name": "Onions (1kg)", "price": 35, "popular": true },
+        { "id": "G009", "name": "Potatoes (1kg)", "price": 30, "popular": false }
+      ]
+    }
+  ]
+}
