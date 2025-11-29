@@ -1,0 +1,30 @@
+{
+  "title": "Jungle of the Fallen Gods",
+  "intro": "The air shifts the moment you enter. Dense vines twist overhead, blocking out the sun. A distant, rhythmic drumbeat echoes through the Jungle of the Fallen Gods—slow… then stopping mid-beat. The trees seem to breathe. Something watches you from the dark. Welcome, traveler. Your story begins now.",
+  "starting_location": "edge_of_jungle",
+  "locations": {
+    "edge_of_jungle": {
+      "desc": "You stand at the tangled edge of a vast jungle. Mist curls across the ground. A narrow, winding path disappears between ancient roots.",
+      "exits": ["damp_clearing", "river_bank"]
+    },
+    "damp_clearing": {
+      "desc": "A damp clearing, thick with fern and mushrooms. You see a half-buried stone marker etched with spirals.",
+      "exits": ["edge_of_jungle", "ancient_ruin"]
+    },
+    "river_bank": {
+      "desc": "A slow, muddy river, vines trailing into the water. The drumbeat seems stronger near the water.",
+      "exits": ["edge_of_jungle"]
+    },
+    "ancient_ruin": {
+      "desc": "Moss-covered ruins rise from the ground. Carved idols watch from shadowed niches.",
+      "exits": ["damp_clearing"]
+    }
+  },
+  "npcs": {
+    "watcher_idol": {
+      "location": "ancient_ruin",
+      "desc": "A stone idol with hollow eyes. Whispers seem to come from it at night."
+    }
+  },
+  "mini_arc_goal": "Retrieve the glowing relic fragment from the ruins and escape the jungle."
+}
